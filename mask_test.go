@@ -55,8 +55,8 @@ func BenchmarkMaskBytes(b *testing.B) {
 						name string
 						fn   func(key [4]byte, pos int, b []byte) int
 					}{
-						//	{"go", maskBytesGo},
-						{"mask", maskBytesGo},
+						{"go", maskBytesGo},
+						{"asm", maskBytes},
 					} {
 						b.Run(fn.name, func(b *testing.B) {
 							key := newMaskKey()
