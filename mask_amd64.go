@@ -37,6 +37,7 @@ func maskBytes(key [4]byte, pos int, b []byte) int {
 }
 
 var useAVX2 = cpu.X86.HasAVX2
+var useAVX512 = cpu.X86.HasAVX512F
 
 //go:noescape
 func maskBlockAvx2(b []byte, key uint64)
