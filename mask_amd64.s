@@ -4,38 +4,21 @@
 
 #include "textflag.h"
 
-// func mask(b []byte, key uint64)
+// func mask(b *byte, len int, key uint64)
 // Requires: AVX, AVX2
-TEXT ·maskBlockAvx2(SB), NOSPLIT, $0-32
+TEXT ·maskAsm(SB), NOSPLIT, $0-32
 	MOVQ b_base+0(FP), AX
 	MOVQ b_len+8(FP), CX
-	MOVQ key+24(FP), DI
+	MOVQ key+16(FP), DI
 	MOVQ AX, DX
 	ADDQ CX, DX
-	CMPB ·useAVX512(SB), $1
-	JE   avx512
 	CMPB ·useAVX2(SB), $1
 	JE   avx2
 	JMP  sse
 
 // todo(wdvxdr): optimize unaligned case
-avx512:
-	VPBROADCASTQ key+24(FP), Z0
-	MOVQ         AX, CX
-
-avx512_loop:
-	ADDQ      $0x80, CX
-	CMPQ      CX, DX
-	JAE       sse
-	VPXORQ    (AX), Z0, Z1
-	VPXORQ    64(AX), Z0, Z2
-	VMOVDQU64 Z1, (AX)
-	VMOVDQU64 Z2, 64(AX)
-	MOVQ      CX, AX
-	JMP       avx512_loop
-
 avx2:
-	VPBROADCASTQ key+24(FP), Y0
+	VPBROADCASTQ key+16(FP), Y0
 	MOVQ         AX, CX
 
 avx2_loop:

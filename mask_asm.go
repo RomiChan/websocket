@@ -2,8 +2,9 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build !appengine || amd64
-// +build !appengine amd64
+//go:build !appengine && (amd64 || arm64)
+// +build !appengine
+// +build amd64 arm64
 
 package websocket
 
@@ -14,20 +15,18 @@ import (
 )
 
 func maskBytes(key [4]byte, pos int, b []byte) int {
-	if len(b) < 128 {
-		return maskBytesGo(key, pos, b)
-	}
+	if len(b) > 16 {
+		var k [4]byte
+		for i := range k {
+			k[i] = key[(pos+i)&3]
+		}
+		key32 := binary.LittleEndian.Uint32(k[:])
+		key64 := uint64(key32) | uint64(key32)<<32
 
-	var k [4]byte
-	for i := range k {
-		k[i] = key[(pos+i)&3]
+		off := (len(b) >> 3) << 3
+		maskAsm(&b[0], off, key64)
+		b = b[off:]
 	}
-	key32 := binary.LittleEndian.Uint32(k[:])
-	key64 := uint64(key32) | uint64(key32)<<32
-
-	off := len(b) / 8 * 8
-	maskBlockAvx2(b[:off], key64)
-	b = b[off:]
 	// Mask one byte at a time for remaining bytes.
 	for i := range b {
 		b[i] ^= key[pos&3]
@@ -37,7 +36,6 @@ func maskBytes(key [4]byte, pos int, b []byte) int {
 }
 
 var useAVX2 = cpu.X86.HasAVX2
-var useAVX512 = cpu.X86.HasAVX512F
 
 //go:noescape
-func maskBlockAvx2(b []byte, key uint64)
+func maskAsm(b *byte, len int, key uint64)
