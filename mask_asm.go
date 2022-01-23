@@ -9,33 +9,17 @@
 package websocket
 
 import (
-	"encoding/binary"
-
 	"golang.org/x/sys/cpu"
 )
 
-func maskBytes(key [4]byte, pos int, b []byte) int {
-	if len(b) > 16 {
-		var k [4]byte
-		for i := range k {
-			k[i] = key[(pos+i)&3]
-		}
-		key32 := binary.LittleEndian.Uint32(k[:])
-		key64 := uint64(key32) | uint64(key32)<<32
-
-		off := (len(b) >> 3) << 3
-		maskAsm(&b[0], off, key64)
-		b = b[off:]
+func maskBytes(key32 uint32, b []byte) uint32 {
+	if len(b) > 0 {
+		return maskAsm(&b[0], len(b), key32)
 	}
-	// Mask one byte at a time for remaining bytes.
-	for i := range b {
-		b[i] ^= key[pos&3]
-		pos++
-	}
-	return pos & 3
+	return key32
 }
 
 var useAVX2 = cpu.X86.HasAVX2
 
 //go:noescape
-func maskAsm(b *byte, len int, key uint64)
+func maskAsm(b *byte, len int, key uint32) uint32

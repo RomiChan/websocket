@@ -8,17 +8,18 @@ package websocket
 
 import (
 	"fmt"
+	"math/bits"
 	"testing"
 )
 
 const wordSize = 8
 
-func maskBytesByByte(key [4]byte, pos int, b []byte) int {
+func maskBytesByByte(key uint32, b []byte) uint32 {
 	for i := range b {
-		b[i] ^= key[pos&3]
-		pos++
+		b[i] ^= byte(key)
+		key = bits.RotateLeft32(key, -8)
 	}
-	return pos & 3
+	return key
 }
 
 func notzero(b []byte) int {
@@ -31,16 +32,21 @@ func notzero(b []byte) int {
 }
 
 func TestMaskBytes(t *testing.T) {
-	key := [4]byte{1, 2, 3, 4}
-	for size := 1; size <= 1024; size++ {
+	origKey := newMaskKey()
+	for size := 1024; size <= 1024; size++ {
 		for align := 0; align < wordSize; align++ {
-			for pos := 0; pos < 4; pos++ {
+			key := origKey
+			for pos := 0; pos < 1; pos++ {
 				b := make([]byte, size+align)[align:]
-				maskBytes(key, pos, b)
-				maskBytesByByte(key, pos, b)
+				r1 := maskBytes(key, b)
+				r2 := maskBytesByByte(key, b)
 				if i := notzero(b); i >= 0 {
 					t.Errorf("size:%d, align:%d, pos:%d, offset:%d", size, align, pos, i)
 				}
+				if r1 != r2 {
+					t.Errorf("size:%d orig: %d key got:%d, expected:%d", size, key, r1, r2)
+				}
+				key = bits.RotateLeft32(key, -8)
 			}
 		}
 	}
@@ -53,7 +59,7 @@ func BenchmarkMaskBytes(b *testing.B) {
 				b.Run(fmt.Sprintf("align-%d", align), func(b *testing.B) {
 					for _, fn := range []struct {
 						name string
-						fn   func(key [4]byte, pos int, b []byte) int
+						fn   func(key uint32, b []byte) uint32
 					}{
 						{"go", maskBytesGo},
 						{"asm", maskBytes},
@@ -62,7 +68,7 @@ func BenchmarkMaskBytes(b *testing.B) {
 							key := newMaskKey()
 							data := make([]byte, size+align)[align:]
 							for i := 0; i < b.N; i++ {
-								fn.fn(key, 0, data)
+								fn.fn(key, data)
 							}
 							b.SetBytes(int64(len(data)))
 						})

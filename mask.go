@@ -6,15 +6,11 @@ package websocket
 
 import (
 	"encoding/binary"
+	"math/bits"
 )
 
-func maskBytesGo(key [4]byte, pos int, b []byte) int {
-	if len(b) > 16 {
-		var k [4]byte
-		for i := range k {
-			k[i] = key[(pos+i)&3]
-		}
-		key32 := binary.LittleEndian.Uint32(k[:])
+func maskBytesGo(key32 uint32, b []byte) uint32 {
+	if len(b) >= 16 {
 		key64 := uint64(key32) | uint64(key32)<<32
 		// At some point in the future we can clean these unrolled loops up.
 		// See https://github.com/golang/go/issues/31586#issuecomment-487436401
@@ -108,8 +104,8 @@ func maskBytesGo(key [4]byte, pos int, b []byte) int {
 	}
 
 	for i := range b {
-		b[i] ^= key[pos&3]
-		pos++
+		b[i] ^= byte(key32)
+		key32 = bits.RotateLeft32(key32, -8)
 	}
-	return pos & 3
+	return key32
 }

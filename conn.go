@@ -181,9 +181,8 @@ var (
 	errInvalidControlFrame = errors.New("websocket: invalid control frame")
 )
 
-func newMaskKey() [4]byte {
-	n := rand.Uint32()
-	return [4]byte{byte(n), byte(n >> 8), byte(n >> 16), byte(n >> 24)}
+func newMaskKey() uint32 {
+	return rand.Uint32()
 }
 
 func hideTempErr(err error) error {
@@ -270,8 +269,7 @@ type Conn struct {
 	readFinal     bool  // true the current message has more frames.
 	readLength    int64 // Message size.
 	readLimit     int64 // Maximum message size.
-	readMaskPos   int
-	readMaskKey   [4]byte
+	readMaskKey   uint32
 	handlePong    func(string) error
 	handlePing    func(string) error
 	handleClose   func(int, string) error
@@ -431,9 +429,11 @@ func (c *Conn) WriteControl(messageType int, data []byte, deadline time.Time) er
 		buf = append(buf, data...)
 	} else {
 		key := newMaskKey()
-		buf = append(buf, key[:]...)
+		keybuf := make([]byte, 4)
+		binary.LittleEndian.PutUint32(keybuf, key)
+		buf = append(buf, keybuf...)
 		buf = append(buf, data...)
-		maskBytes(key, 0, buf[6:])
+		maskBytes(key, buf[6:])
 	}
 
 	d := 1000 * time.Hour
@@ -602,8 +602,10 @@ func (w *messageWriter) flushFrame(final bool, extra []byte) error {
 
 	if !c.isServer {
 		key := newMaskKey()
-		copy(c.writeBuf[maxFrameHeaderSize-4:], key[:])
-		maskBytes(key, 0, c.writeBuf[maxFrameHeaderSize:w.pos])
+		keybuf := make([]byte, 4)
+		binary.LittleEndian.PutUint32(keybuf, key)
+		copy(c.writeBuf[maxFrameHeaderSize-4:], keybuf)
+		maskBytes(key, c.writeBuf[maxFrameHeaderSize:w.pos])
 		if len(extra) > 0 {
 			return w.endMessage(c.writeFatal(errors.New("websocket: internal error, extra used in client mode")))
 		}
@@ -902,12 +904,11 @@ func (c *Conn) advanceFrame() (int, error) {
 	// 4. Handle frame masking.
 
 	if mask {
-		c.readMaskPos = 0
-		p, err := c.read(len(c.readMaskKey))
+		p, err := c.read(4)
 		if err != nil {
 			return noFrame, err
 		}
-		copy(c.readMaskKey[:], p)
+		c.readMaskKey = binary.LittleEndian.Uint32(p)
 	}
 
 	// 5. For text and binary messages, enforce read limit and return.
@@ -939,7 +940,7 @@ func (c *Conn) advanceFrame() (int, error) {
 			return noFrame, err
 		}
 		if c.isServer {
-			maskBytes(c.readMaskKey, 0, payload)
+			maskBytes(c.readMaskKey, payload)
 		}
 	}
 
@@ -1050,7 +1051,7 @@ func (r *messageReader) Read(b []byte) (int, error) {
 			n, err := c.br.Read(b)
 			c.readErr = hideTempErr(err)
 			if c.isServer {
-				c.readMaskPos = maskBytes(c.readMaskKey, c.readMaskPos, b[:n])
+				c.readMaskKey = maskBytes(c.readMaskKey, b[:n])
 			}
 			rem := c.readRemaining
 			rem -= int64(n)

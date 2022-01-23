@@ -4,16 +4,19 @@
 
 #include "textflag.h"
 
-// func maskBlockAsm(b []byte, key uint64)
+// func maskBlockAsm(b *byte,len, int, key uint32)
 // Requires: AVX, AVX2
 TEXT ·maskAsm(SB), NOSPLIT, $0-32
-	MOVD b_ptr+0(FP), R0
-	MOVD b_len+8(FP), R1
-	MOVD key+16(FP), R2
-	VDUP R2, V0.D2
-	CMP  $64, R1
-	BLT  tail
+	MOVD   b_ptr+0(FP), R0
+	MOVD   b_len+8(FP), R1
+	MOVDWU key+16(FP), R3
+	MOVDWU R3, R2
+	ORR    R2<<32, R2, R2
+	VDUP   R2, V0.D2
+	CMP    $64, R1
+	BLT    tail
 
+// todo(wdvxdr): optimize unaligned case
 loop_64:
 	VLD1   (R0), [V1.B16, V2.B16, V3.B16, V4.B16]
 	VEOR   V1.B16, V0.B16, V1.B16
@@ -42,10 +45,31 @@ less_than32:
 	STP.P (R11, R12), 16(R0)
 
 less_than16:
-	TBZ    $3, R1, end
+	TBZ    $3, R1, less_than8
 	MOVD   (R0), R11
 	EOR    R2, R11, R11
-	MOVD   R11, (R0)
+	MOVD.P R11, 8(R0)
+
+less_than8:
+	TBZ     $2, R1, less_than4
+	MOVWU   (R0), R11
+	EORW    R2, R11, R11
+	MOVWU.P R11, 4(R0)
+
+less_than4:
+	TBZ     $1, R1, less_than2
+	MOVHU   (R0), R11
+	EORW    R3, R11, R11
+	MOVHU.P R11, 2(R0)
+	RORW    $16, R3
+
+less_than2:
+	CBZ     R1, end
+	MOVBU   (R0), R11
+	EORW    R3, R11, R11
+	MOVBU.P R11, 1(R0)
+	RORW    $8, R3
 
 end:
+	MOVWU R3, ret+24(FP)
 	RET
