@@ -9,8 +9,8 @@
 TEXT ·maskAsm(SB), NOSPLIT, $0-28
 	MOVD   b_ptr+0(FP), R0
 	MOVD   b_len+8(FP), R1
-	MOVDWU key+16(FP), R3
-	MOVDWU R3, R2
+	MOVWU key+16(FP), R3
+	MOVD R3, R2
 	ORR    R2<<32, R2, R2
 	VDUP   R2, V0.D2
 	CMP    $64, R1
@@ -64,7 +64,7 @@ less_than4:
 	RORW    $16, R3
 
 less_than2:
-	CBZ     R1, end
+	TBZ     $0, R1, end
 	MOVBU   (R0), R11
 	EORW    R3, R11, R11
 	MOVBU.P R11, 1(R0)

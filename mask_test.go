@@ -33,7 +33,7 @@ func notzero(b []byte) int {
 
 func TestMaskBytes(t *testing.T) {
 	origKey := newMaskKey()
-	for size := 1024; size <= 1024; size++ {
+	for size := 1; size <= 1024; size++ {
 		for align := 0; align < wordSize; align++ {
 			key := origKey
 			for pos := 0; pos < 1; pos++ {
