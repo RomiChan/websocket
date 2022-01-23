@@ -6,7 +6,7 @@
 
 // func mask(b *byte, len int, key uint32)
 // Requires: AVX, AVX2
-TEXT ·maskAsm(SB), NOSPLIT, $0-24
+TEXT ·maskAsm(SB), NOSPLIT, $0-28
 	MOVQ b+0(FP), AX
 	MOVQ len+8(FP), CX
 	MOVL key+16(FP), SI

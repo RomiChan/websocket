@@ -32,18 +32,3 @@ jobs:
 
       - name: Test
         run: go test -v ./...
-
-  arm64:
-    # The host should always be Linux
-    runs-on: ubuntu-18.04
-    name: Test-ARM64
-    steps:
-      - uses: actions/checkout@v2.1.0
-      - uses: uraimo/run-on-arch-action@v2
-        name: Run commands
-        id: runcmd
-        with:
-          arch: aarch64
-          distro: ubuntu18.04
-          githubToken: ${{ github.token }}
-          run: go test -v ./...
