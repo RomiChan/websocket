@@ -7,6 +7,6 @@
 
 package websocket
 
-func maskBytes(key [4]byte, pos int, b []byte) int {
-	return maskBytesGo(key, pos, b)
+func maskBytes(key32 uint32, b []byte) uint32 {
+	return maskBytesGo(key32, b)
 }
