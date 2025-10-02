@@ -7,8 +7,8 @@
 // func maskBlockAsm(b *byte,len, int, key uint32)
 // Requires: AVX, AVX2
 TEXT ·maskAsm(SB), NOSPLIT, $0-28
-	MOVD   b_ptr+0(FP), R0
-	MOVD   b_len+8(FP), R1
+	MOVD   b+0(FP), R0
+	MOVD   len+8(FP), R1
 	MOVWU key+16(FP), R3
 	MOVD R3, R2
 	ORR    R2<<32, R2, R2
