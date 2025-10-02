@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"reflect"
 	"sync"
@@ -48,7 +47,7 @@ func (a fakeAddr) String() string {
 	return "str"
 }
 
-// newTestConn creates a connnection backed by a fake network connection using
+// newTestConn creates a connection backed by a fake network connection using
 // default values for buffering.
 func newTestConn(r io.Reader, w io.Writer, isServer bool) *Conn {
 	return newConn(fakeNetConn{Reader: r, Writer: w}, isServer, 1024, 1024, nil, nil, nil)
@@ -125,7 +124,7 @@ func TestFraming(t *testing.T) {
 						}
 
 						t.Logf("frame size: %d", n)
-						rbuf, err := ioutil.ReadAll(r)
+						rbuf, err := io.ReadAll(r)
 						if err != nil {
 							t.Errorf("%s: ReadFull() returned rbuf, %v", name, err)
 							continue
@@ -149,8 +148,49 @@ func TestFraming(t *testing.T) {
 	}
 }
 
-func TestControl(t *testing.T) {
+func TestWriteControlDeadline(t *testing.T) {
+	t.Parallel()
+	message := []byte("hello")
+	var connBuf bytes.Buffer
+	c := newTestConn(nil, &connBuf, true)
+	if err := c.WriteControl(PongMessage, message, time.Time{}); err != nil {
+		t.Errorf("WriteControl(..., zero deadline) = %v, want nil", err)
+	}
+	if err := c.WriteControl(PongMessage, message, time.Now().Add(time.Second)); err != nil {
+		t.Errorf("WriteControl(..., future deadline) = %v, want nil", err)
+	}
+	if err := c.WriteControl(PongMessage, message, time.Now().Add(-time.Second)); err == nil {
+		t.Errorf("WriteControl(..., past deadline) = nil, want timeout error")
+	}
+}
+
+func TestConcurrencyWriteControl(t *testing.T) {
 	const message = "this is a ping/pong messsage"
+	loop := 10
+	workers := 10
+	for i := 0; i < loop; i++ {
+		var connBuf bytes.Buffer
+
+		wg := sync.WaitGroup{}
+		wc := newTestConn(nil, &connBuf, true)
+
+		for i := 0; i < workers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := wc.WriteControl(PongMessage, []byte(message), time.Now().Add(time.Second)); err != nil {
+					t.Errorf("concurrently wc.WriteControl() returned %v", err)
+				}
+			}()
+		}
+
+		wg.Wait()
+		wc.Close()
+	}
+}
+
+func TestControl(t *testing.T) {
+	const message = "this is a ping/pong message"
 	for _, isServer := range []bool{true, false} {
 		for _, isWriteControl := range []bool{true, false} {
 			name := fmt.Sprintf("s:%v, wc:%v", isServer, isWriteControl)
@@ -158,7 +198,7 @@ func TestControl(t *testing.T) {
 			wc := newTestConn(nil, &connBuf, isServer)
 			rc := newTestConn(&connBuf, nil, !isServer)
 			if isWriteControl {
-				wc.WriteControl(PongMessage, []byte(message), time.Now().Add(time.Second))
+				_ = wc.WriteControl(PongMessage, []byte(message), time.Now().Add(time.Second))
 			} else {
 				w, err := wc.NextWriter(PongMessage)
 				if err != nil {
@@ -175,7 +215,7 @@ func TestControl(t *testing.T) {
 				}
 				var actualMessage string
 				rc.SetPongHandler(func(s string) error { actualMessage = s; return nil })
-				rc.NextReader()
+				_, _, _ = rc.NextReader()
 				if actualMessage != message {
 					t.Errorf("%s: pong=%q, want %q", name, actualMessage, message)
 					continue
@@ -359,15 +399,15 @@ func TestCloseFrameBeforeFinalMessageFrame(t *testing.T) {
 	rc := newTestConn(&b1, &b2, true)
 
 	w, _ := wc.NextWriter(BinaryMessage)
-	w.Write(make([]byte, bufSize+bufSize/2))
-	wc.WriteControl(CloseMessage, FormatCloseMessage(expectedErr.Code, expectedErr.Text), time.Now().Add(10*time.Second))
+	_, _ = w.Write(make([]byte, bufSize+bufSize/2))
+	_ = wc.WriteControl(CloseMessage, FormatCloseMessage(expectedErr.Code, expectedErr.Text), time.Now().Add(10*time.Second))
 	w.Close()
 
 	op, r, err := rc.NextReader()
 	if op != BinaryMessage || err != nil {
 		t.Fatalf("NextReader() returned %d, %v", op, err)
 	}
-	_, err = io.Copy(ioutil.Discard, r)
+	_, err = io.Copy(io.Discard, r)
 	if !reflect.DeepEqual(err, expectedErr) {
 		t.Fatalf("io.Copy() returned %v, want %v", err, expectedErr)
 	}
@@ -386,7 +426,7 @@ func TestEOFWithinFrame(t *testing.T) {
 		rc := newTestConn(&b, nil, true)
 
 		w, _ := wc.NextWriter(BinaryMessage)
-		w.Write(make([]byte, bufSize))
+		_, _ = w.Write(make([]byte, bufSize))
 		w.Close()
 
 		if n >= b.Len() {
@@ -401,7 +441,7 @@ func TestEOFWithinFrame(t *testing.T) {
 		if op != BinaryMessage || err != nil {
 			t.Fatalf("%d: NextReader() returned %d, %v", n, op, err)
 		}
-		_, err = io.Copy(ioutil.Discard, r)
+		_, err = io.Copy(io.Discard, r)
 		if err != errUnexpectedEOF {
 			t.Fatalf("%d: io.Copy() returned %v, want %v", n, err, errUnexpectedEOF)
 		}
@@ -420,13 +460,13 @@ func TestEOFBeforeFinalFrame(t *testing.T) {
 	rc := newTestConn(&b1, &b2, true)
 
 	w, _ := wc.NextWriter(BinaryMessage)
-	w.Write(make([]byte, bufSize+bufSize/2))
+	_, _ = w.Write(make([]byte, bufSize+bufSize/2))
 
 	op, r, err := rc.NextReader()
 	if op != BinaryMessage || err != nil {
 		t.Fatalf("NextReader() returned %d, %v", op, err)
 	}
-	_, err = io.Copy(ioutil.Discard, r)
+	_, err = io.Copy(io.Discard, r)
 	if err != errUnexpectedEOF {
 		t.Fatalf("io.Copy() returned %v, want %v", err, errUnexpectedEOF)
 	}
@@ -439,9 +479,9 @@ func TestEOFBeforeFinalFrame(t *testing.T) {
 func TestWriteAfterMessageWriterClose(t *testing.T) {
 	wc := newTestConn(nil, &bytes.Buffer{}, false)
 	w, _ := wc.NextWriter(BinaryMessage)
-	io.WriteString(w, "hello")
+	_, _ = io.WriteString(w, "hello")
 	if err := w.Close(); err != nil {
-		t.Fatalf("unxpected error closing message writer, %v", err)
+		t.Fatalf("unexpected error closing message writer, %v", err)
 	}
 
 	if _, err := io.WriteString(w, "world"); err == nil {
@@ -449,7 +489,7 @@ func TestWriteAfterMessageWriterClose(t *testing.T) {
 	}
 
 	w, _ = wc.NextWriter(BinaryMessage)
-	io.WriteString(w, "hello")
+	_, _ = io.WriteString(w, "hello")
 
 	// close w by getting next writer
 	_, err := wc.NextWriter(BinaryMessage)
@@ -474,13 +514,13 @@ func TestReadLimit(t *testing.T) {
 
 		// Send message at the limit with interleaved pong.
 		w, _ := wc.NextWriter(BinaryMessage)
-		w.Write(message[:readLimit-1])
-		wc.WriteControl(PongMessage, []byte("this is a pong"), time.Now().Add(10*time.Second))
-		w.Write(message[:1])
+		_, _ = w.Write(message[:readLimit-1])
+		_ = wc.WriteControl(PongMessage, []byte("this is a pong"), time.Now().Add(10*time.Second))
+		_, _ = w.Write(message[:1])
 		w.Close()
 
 		// Send message larger than the limit.
-		wc.WriteMessage(BinaryMessage, message[:readLimit+1])
+		_ = wc.WriteMessage(BinaryMessage, message[:readLimit+1])
 
 		op, _, err := rc.NextReader()
 		if op != BinaryMessage || err != nil {
@@ -490,7 +530,7 @@ func TestReadLimit(t *testing.T) {
 		if op != BinaryMessage || err != nil {
 			t.Fatalf("2: NextReader() returned %d, %v", op, err)
 		}
-		_, err = io.Copy(ioutil.Discard, r)
+		_, err = io.Copy(io.Discard, r)
 		if err != ErrReadLimit {
 			t.Fatalf("io.Copy() returned %v", err)
 		}
@@ -562,11 +602,21 @@ func TestAddrs(t *testing.T) {
 	}
 }
 
-func TestUnderlyingConn(t *testing.T) {
+func TestDeprecatedUnderlyingConn(t *testing.T) {
 	var b1, b2 bytes.Buffer
 	fc := fakeNetConn{Reader: &b1, Writer: &b2}
 	c := newConn(fc, true, 1024, 1024, nil, nil, nil)
 	ul := c.UnderlyingConn()
+	if ul != fc {
+		t.Fatalf("Underlying conn is not what it should be.")
+	}
+}
+
+func TestNetConn(t *testing.T) {
+	var b1, b2 bytes.Buffer
+	fc := fakeNetConn{Reader: &b1, Writer: &b2}
+	c := newConn(fc, true, 1024, 1024, nil, nil, nil)
+	ul := c.NetConn()
 	if ul != fc {
 		t.Fatalf("Underlying conn is not what it should be.")
 	}
@@ -583,7 +633,7 @@ func TestBufioReadBytes(t *testing.T) {
 	rc := newConn(fakeNetConn{Reader: &b1, Writer: &b2}, true, len(m)-64, len(m)-64, nil, nil, nil)
 
 	w, _ := wc.NextWriter(BinaryMessage)
-	w.Write(m)
+	_, _ = w.Write(m)
 	w.Close()
 
 	op, r, err := rc.NextReader()
@@ -657,7 +707,7 @@ func TestConcurrentWritePanic(t *testing.T) {
 	w := blockingWriter{make(chan struct{}), make(chan struct{})}
 	c := newTestConn(nil, w, false)
 	go func() {
-		c.WriteMessage(TextMessage, []byte{})
+		_ = c.WriteMessage(TextMessage, []byte{})
 	}()
 
 	// wait for goroutine to block in write.
@@ -670,7 +720,7 @@ func TestConcurrentWritePanic(t *testing.T) {
 		}
 	}()
 
-	c.WriteMessage(TextMessage, []byte{})
+	_ = c.WriteMessage(TextMessage, []byte{})
 	t.Fatal("should not get here")
 }
 
@@ -690,7 +740,7 @@ func TestFailedConnectionReadPanic(t *testing.T) {
 	}()
 
 	for i := 0; i < 20000; i++ {
-		c.ReadMessage()
+		_, _, _ = c.ReadMessage()
 	}
 	t.Fatal("should not get here")
 }

@@ -16,7 +16,7 @@ jobs:
         type: string
         default: ""
     docker:
-      - image: "circleci/golang:<< parameters.version >>"
+      - image: "cimg/go:<< parameters.version >>"
     working_directory: /go/src/github.com/RomiChan/websocket
     environment:
       GO111MODULE: "on"
@@ -67,4 +67,4 @@ workflows:
       - test:
           matrix:
             parameters:
-              version: ["latest", "1.17", "1.16", "1.15", "1.14", "1.13", "1.12", "1.11"]
+              version: ["1.22", "1.21", "1.20"]

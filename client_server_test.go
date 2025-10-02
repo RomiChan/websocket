@@ -5,6 +5,7 @@
 package websocket
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -14,7 +15,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -24,6 +24,7 @@ import (
 	"net/url"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -45,12 +46,15 @@ var cstDialer = Dialer{
 	HandshakeTimeout: 30 * time.Second,
 }
 
-type cstHandler struct{ *testing.T }
+type cstHandler struct {
+	*testing.T
+	s *cstServer
+}
 
 type cstServer struct {
-	*httptest.Server
-	URL string
-	t   *testing.T
+	URL    string
+	Server *httptest.Server
+	wg     sync.WaitGroup
 }
 
 const (
@@ -59,9 +63,15 @@ const (
 	cstRequestURI = cstPath + "?" + cstRawQuery
 )
 
+func (s *cstServer) Close() {
+	s.Server.Close()
+	// Wait for handler functions to complete.
+	s.wg.Wait()
+}
+
 func newServer(t *testing.T) *cstServer {
 	var s cstServer
-	s.Server = httptest.NewServer(cstHandler{t})
+	s.Server = httptest.NewServer(cstHandler{T: t, s: &s})
 	s.Server.URL += cstRequestURI
 	s.URL = makeWsProto(s.Server.URL)
 	return &s
@@ -69,13 +79,19 @@ func newServer(t *testing.T) *cstServer {
 
 func newTLSServer(t *testing.T) *cstServer {
 	var s cstServer
-	s.Server = httptest.NewTLSServer(cstHandler{t})
+	s.Server = httptest.NewTLSServer(cstHandler{T: t, s: &s})
 	s.Server.URL += cstRequestURI
 	s.URL = makeWsProto(s.Server.URL)
 	return &s
 }
 
 func (t cstHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Because tests wait for a response from a server, we are guaranteed that
+	// the wait group count is incremented before the test waits on the group
+	// in the call to (*cstServer).Close().
+	t.s.wg.Add(1)
+	defer t.s.wg.Done()
+
 	if r.URL.Path != cstPath {
 		t.Logf("path=%v, want %v", r.URL.Path, cstPath)
 		http.Error(w, "bad path", http.StatusBadRequest)
@@ -482,6 +498,37 @@ func TestBadMethod(t *testing.T) {
 	}
 }
 
+func TestNoUpgrade(t *testing.T) {
+	t.Parallel()
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := cstUpgrader.Upgrade(w, r, nil)
+		if err == nil {
+			t.Errorf("handshake succeeded, expect fail")
+			ws.Close()
+		}
+	}))
+	defer s.Close()
+
+	req, err := http.NewRequest(http.MethodGet, s.URL, strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("NewRequest returned error %v", err)
+	}
+	req.Header.Set("Connection", "upgrade")
+	req.Header.Set("Sec-Websocket-Version", "13")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do returned error %v", err)
+	}
+	resp.Body.Close()
+	if u := resp.Header.Get("Upgrade"); u != "websocket" {
+		t.Errorf("Upgrade response header is %q, want %q", u, "websocket")
+	}
+	if resp.StatusCode != http.StatusUpgradeRequired {
+		t.Errorf("Status = %d, want %d", resp.StatusCode, http.StatusUpgradeRequired)
+	}
+}
+
 func TestDialExtraTokensInRespHeaders(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		challengeKey := r.Header.Get("Sec-Websocket-Key")
@@ -531,7 +578,7 @@ func TestRespOnBadHandshake(t *testing.T) {
 
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(expectedStatus)
-		io.WriteString(w, expectedBody)
+		_, _ = io.WriteString(w, expectedBody)
 	}))
 	defer s.Close()
 
@@ -549,7 +596,7 @@ func TestRespOnBadHandshake(t *testing.T) {
 		t.Errorf("resp.StatusCode=%d, want %d", resp.StatusCode, expectedStatus)
 	}
 
-	p, err := ioutil.ReadAll(resp.Body)
+	p, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("ReadFull(resp.Body) returned error %v", err)
 	}
@@ -781,7 +828,7 @@ func TestSocksProxyDial(t *testing.T) {
 		}
 		defer c1.Close()
 
-		c1.SetDeadline(time.Now().Add(30 * time.Second))
+		_ = c1.SetDeadline(time.Now().Add(30 * time.Second))
 
 		buf := make([]byte, 32)
 		if _, err := io.ReadFull(c1, buf[:3]); err != nil {
@@ -820,10 +867,10 @@ func TestSocksProxyDial(t *testing.T) {
 		defer c2.Close()
 		done := make(chan struct{})
 		go func() {
-			io.Copy(c1, c2)
+			_, _ = io.Copy(c1, c2)
 			close(done)
 		}()
-		io.Copy(c2, c1)
+		_, _ = io.Copy(c2, c1)
 		<-done
 	}()
 
@@ -1096,5 +1143,103 @@ func TestNetDialConnect(t *testing.T) {
 		} else {
 			c.Close()
 		}
+	}
+}
+func TestNextProtos(t *testing.T) {
+	ts := httptest.NewUnstartedServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}),
+	)
+	ts.EnableHTTP2 = true
+	ts.StartTLS()
+	defer ts.Close()
+
+	d := Dialer{
+		TLSClientConfig: ts.Client().Transport.(*http.Transport).TLSClientConfig,
+	}
+
+	r, err := ts.Client().Get(ts.URL)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	r.Body.Close()
+
+	// Asserts that Dialer.TLSClientConfig.NextProtos contains "h2"
+	// after the Client.Get call from net/http above.
+	var containsHTTP2 bool = false
+	for _, proto := range d.TLSClientConfig.NextProtos {
+		if proto == "h2" {
+			containsHTTP2 = true
+		}
+	}
+	if !containsHTTP2 {
+		t.Fatalf("Dialer.TLSClientConfig.NextProtos does not contain \"h2\"")
+	}
+
+	_, _, err = d.Dial(makeWsProto(ts.URL), nil)
+	if err == nil {
+		t.Fatalf("Dial succeeded, expect fail ")
+	}
+}
+
+type dataBeforeHandshakeResponseWriter struct {
+	http.ResponseWriter
+}
+
+type dataBeforeHandshakeConnection struct {
+	net.Conn
+	io.Reader
+}
+
+func (c *dataBeforeHandshakeConnection) Read(p []byte) (int, error) {
+	return c.Reader.Read(p)
+}
+
+func (w dataBeforeHandshakeResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	// Example single-frame masked text message from section 5.7 of the RFC.
+	message := []byte{0x81, 0x85, 0x37, 0xfa, 0x21, 0x3d, 0x7f, 0x9f, 0x4d, 0x51, 0x58}
+	n := len(message) / 2
+
+	c, rw, err := http.NewResponseController(w.ResponseWriter).Hijack()
+	if rw != nil {
+		// Load first part of message into bufio.Reader. If the websocket
+		// connection reads more than n bytes from the bufio.Reader, then the
+		// test will fail with an unexpected EOF error.
+		rw.Reader.Reset(bytes.NewReader(message[:n]))
+		rw.Reader.Peek(n)
+	}
+	if c != nil {
+		// Inject second part of message before data read from the network connection.
+		c = &dataBeforeHandshakeConnection{
+			Conn:   c,
+			Reader: io.MultiReader(bytes.NewReader(message[n:]), c),
+		}
+	}
+	return c, rw, err
+}
+
+func TestDataReceivedBeforeHandshake(t *testing.T) {
+	s := newServer(t)
+	defer s.Close()
+
+	origHandler := s.Server.Config.Handler
+	s.Server.Config.Handler = http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			origHandler.ServeHTTP(dataBeforeHandshakeResponseWriter{w}, r)
+		})
+
+	for _, readBufferSize := range []int{0, 1024} {
+		t.Run(fmt.Sprintf("ReadBufferSize=%d", readBufferSize), func(t *testing.T) {
+			dialer := cstDialer
+			dialer.ReadBufferSize = readBufferSize
+			ws, _, err := cstDialer.Dial(s.URL, nil)
+			if err != nil {
+				t.Fatalf("Dial: %v", err)
+			}
+			defer ws.Close()
+			_, m, err := ws.ReadMessage()
+			if err != nil || string(m) != "Hello" {
+				t.Fatalf("ReadMessage() = %q, %v, want \"Hello\", nil", m, err)
+			}
+		})
 	}
 }
