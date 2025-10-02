@@ -3,7 +3,7 @@ module github.com/RomiChan/websocket
 go 1.20
 
 require (
-	github.com/fumiama/orbyte v0.0.0-20250512155242-23a2b7120589
+	github.com/fumiama/orbyte v0.0.0-20251002065953-3bb358367eb5
 	golang.org/x/net v0.26.0
 	golang.org/x/sys v0.21.0
 )

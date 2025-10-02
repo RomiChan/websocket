@@ -227,20 +227,6 @@ func isValidReceivedCloseCode(code int) bool {
 	return validReceivedCloseCodes[code] || (code >= 3000 && code <= 4999)
 }
 
-// BufferPool represents a pool of buffers. The *sync.Pool type satisfies this
-// interface.  The type of the value stored in a pool is not specified.
-type BufferPool interface {
-	// Get gets a value from the pool or returns nil if the pool is empty.
-	Get() interface{}
-	// Put adds a value to the pool.
-	Put(interface{})
-}
-
-// writePoolData is the type added to the write buffer pool. This wrapper is
-// used to prevent applications from peeking at and depending on the values
-// added to the pool.
-type writePoolData struct{ buf []byte }
-
 // The Conn type represents a WebSocket connection.
 type Conn struct {
 	conn        net.Conn
@@ -250,7 +236,7 @@ type Conn struct {
 	// Write fields
 	mu            chan struct{} // used as mutex to protect write to conn
 	writeBuf      []byte        // frame is constructed in this buffer.
-	writePool     BufferPool
+	writePool     *pbuf.Pool
 	writeBufSize  int
 	writeDeadline time.Time
 	writer        io.WriteCloser // the current writer returned to the application
@@ -284,7 +270,7 @@ type Conn struct {
 	newDecompressionReader func(io.Reader) io.ReadCloser
 }
 
-func newConn(conn net.Conn, isServer bool, readBufferSize, writeBufferSize int, writeBufferPool BufferPool, br *bufio.Reader, writeBuf []byte) *Conn {
+func newConn(conn net.Conn, isServer bool, readBufferSize, writeBufferSize int, writeBufferPool *pbuf.Pool, br *bufio.Reader, writeBuf []byte) *Conn {
 
 	if br == nil {
 		if readBufferSize == 0 {
@@ -527,12 +513,7 @@ func (c *Conn) beginMessage(mw *messageWriter, messageType int) error {
 	mw.pos = maxFrameHeaderSize
 
 	if c.writeBuf == nil {
-		wpd, ok := c.writePool.Get().(writePoolData)
-		if ok {
-			c.writeBuf = wpd.buf
-		} else {
-			c.writeBuf = make([]byte, c.writeBufSize)
-		}
+		c.writeBuf = c.writePool.NewBytes(c.writeBufSize).Trans()
 	}
 	return nil
 }
@@ -575,7 +556,7 @@ func (w *messageWriter) endMessage(err error) error {
 	w.err = err
 	c.writer = nil
 	if c.writePool != nil {
-		c.writePool.Put(writePoolData{buf: c.writeBuf})
+		c.writePool.InvolveBytes(c.writeBuf...).ManualDestroy()
 		c.writeBuf = nil
 	}
 	return err

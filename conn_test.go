@@ -16,6 +16,8 @@ import (
 	"testing"
 	"testing/iotest"
 	"time"
+
+	"github.com/fumiama/orbyte/pbuf"
 )
 
 var _ net.Error = errWriteTimeout
@@ -225,26 +227,11 @@ func TestControl(t *testing.T) {
 	}
 }
 
-// simpleBufferPool is an implementation of BufferPool for TestWriteBufferPool.
-type simpleBufferPool struct {
-	v interface{}
-}
-
-func (p *simpleBufferPool) Get() interface{} {
-	v := p.v
-	p.v = nil
-	return v
-}
-
-func (p *simpleBufferPool) Put(v interface{}) {
-	p.v = v
-}
-
 func TestWriteBufferPool(t *testing.T) {
 	const message = "Now is the time for all good people to come to the aid of the party."
 
 	var buf bytes.Buffer
-	var pool simpleBufferPool
+	pool := pbuf.GetDefaultBufferPool()
 	rc := newTestConn(&buf, nil, false)
 
 	// Specify writeBufferSize smaller than message size to ensure that pooling
@@ -280,9 +267,13 @@ func TestWriteBufferPool(t *testing.T) {
 		t.Fatal("writeBuf not nil after w.Close()")
 	}
 
-	if wpd, ok := pool.v.(writePoolData); !ok || len(wpd.buf) == 0 || &wpd.buf[0] != writeBufAddr {
-		t.Fatal("writeBuf not returned to pool")
-	}
+	tbuf := pool.NewBytes(1)
+	tbuf.V(func(wpd []byte) {
+		if &wpd[0] != writeBufAddr {
+			t.Fatal("writeBuf not returned to pool")
+		}
+	})
+	tbuf.ManualDestroy()
 
 	opCode, p, err := rc.ReadMessage()
 	if opCode != TextMessage || err != nil {
@@ -303,9 +294,13 @@ func TestWriteBufferPool(t *testing.T) {
 		t.Fatal("writeBuf not nil after wc.WriteMessage()")
 	}
 
-	if wpd, ok := pool.v.(writePoolData); !ok || len(wpd.buf) == 0 || &wpd.buf[0] != writeBufAddr {
-		t.Fatal("writeBuf not returned to pool after WriteMessage")
-	}
+	tbuf = pool.NewBytes(1)
+	tbuf.V(func(wpd []byte) {
+		if &wpd[0] != writeBufAddr {
+			t.Fatal("writeBuf not returned to pool after WriteMessage")
+		}
+	})
+	tbuf.ManualDestroy()
 
 	opCode, p, err = rc.ReadMessage()
 	if opCode != TextMessage || err != nil {
@@ -314,28 +309,6 @@ func TestWriteBufferPool(t *testing.T) {
 
 	if s := string(p); s != message {
 		t.Fatalf("message is %s, want %s", s, message)
-	}
-}
-
-// TestWriteBufferPoolSync ensures that *sync.Pool works as a buffer pool.
-func TestWriteBufferPoolSync(t *testing.T) {
-	var buf bytes.Buffer
-	var pool sync.Pool
-	wc := newConn(fakeNetConn{Writer: &buf}, true, 1024, 1024, &pool, nil, nil)
-	rc := newTestConn(&buf, nil, false)
-
-	const message = "Hello World!"
-	for i := 0; i < 3; i++ {
-		if err := wc.WriteMessage(TextMessage, []byte(message)); err != nil {
-			t.Fatalf("wc.WriteMessage() returned %v", err)
-		}
-		opCode, p, err := rc.ReadMessage()
-		if opCode != TextMessage || err != nil {
-			t.Fatalf("ReadMessage() returned %d, p, %v", opCode, err)
-		}
-		if s := string(p); s != message {
-			t.Fatalf("message is %s, want %s", s, message)
-		}
 	}
 }
 
@@ -350,7 +323,7 @@ func TestWriteBufferPoolError(t *testing.T) {
 
 	// Part 1: Test NextWriter/Write/Close
 
-	var pool simpleBufferPool
+	pool := pbuf.GetDefaultBufferPool()
 	wc := newConn(fakeNetConn{Writer: errorWriter{}}, true, 1024, 1024, &pool, nil, nil)
 
 	w, err := wc.NextWriter(TextMessage)
@@ -372,9 +345,13 @@ func TestWriteBufferPoolError(t *testing.T) {
 		t.Fatalf("w.Close() did not return error")
 	}
 
-	if wpd, ok := pool.v.(writePoolData); !ok || len(wpd.buf) == 0 || &wpd.buf[0] != writeBufAddr {
-		t.Fatal("writeBuf not returned to pool")
-	}
+	tbuf := pool.NewBytes(1)
+	tbuf.V(func(wpd []byte) {
+		if &wpd[0] != writeBufAddr {
+			t.Fatal("writeBuf not returned to pool")
+		}
+	})
+	tbuf.ManualDestroy()
 
 	// Part 2: Test WriteMessage
 
@@ -384,9 +361,13 @@ func TestWriteBufferPoolError(t *testing.T) {
 		t.Fatalf("wc.WriteMessage did not return error")
 	}
 
-	if wpd, ok := pool.v.(writePoolData); !ok || len(wpd.buf) == 0 || &wpd.buf[0] != writeBufAddr {
-		t.Fatal("writeBuf not returned to pool")
-	}
+	tbuf = pool.NewBytes(1)
+	tbuf.V(func(wpd []byte) {
+		if &wpd[0] != writeBufAddr {
+			t.Fatal("writeBuf not returned to pool")
+		}
+	})
+	tbuf.ManualDestroy()
 }
 
 func TestCloseFrameBeforeFinalMessageFrame(t *testing.T) {

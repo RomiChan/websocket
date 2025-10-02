@@ -17,6 +17,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/fumiama/orbyte/pbuf"
 )
 
 // ErrBadHandshake is returned when the server response to opening handshake is
@@ -110,7 +112,7 @@ type Dialer struct {
 	//
 	// Applications should use a single pool for each unique value of
 	// WriteBufferSize.
-	WriteBufferPool BufferPool
+	WriteBufferPool *pbuf.Pool
 
 	// Subprotocols specifies the client's requested subprotocols.
 	Subprotocols []string

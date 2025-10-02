@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/fumiama/orbyte/pbuf"
 )
 
 // HandshakeError describes an error with the handshake from the peer.
@@ -43,7 +45,7 @@ type Upgrader struct {
 	//
 	// Applications should use a single pool for each unique value of
 	// WriteBufferSize.
-	WriteBufferPool BufferPool
+	WriteBufferPool *pbuf.Pool
 
 	// Subprotocols specifies the server's supported protocols in order of
 	// preference. If this field is not nil, then the Upgrade method negotiates a
@@ -370,4 +372,3 @@ func (b *brNetConn) Read(p []byte) (n int, err error) {
 func (b *brNetConn) NetConn() net.Conn {
 	return b.Conn
 }
-
