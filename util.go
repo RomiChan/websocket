@@ -12,23 +12,30 @@ import (
 	"net/http"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/fumiama/orbyte/pbuf"
 )
 
 var keyGUID = []byte("258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
 
-func computeAcceptKey(challengeKey string) string {
+func computeAcceptKey(challengeKey string) (s string) {
 	h := sha1.New()
-	h.Write([]byte(challengeKey))
+	io.WriteString(h, challengeKey)
 	h.Write(keyGUID)
-	return base64.StdEncoding.EncodeToString(h.Sum(nil))
+	pbuf.NewBytes(sha1.Size).V(func(b []byte) {
+		s = base64.StdEncoding.EncodeToString(h.Sum(b[:0]))
+	})
+	return
 }
 
-func generateChallengeKey() (string, error) {
-	p := make([]byte, 16)
-	if _, err := io.ReadFull(rand.Reader, p); err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(p), nil
+func generateChallengeKey() (key string, err error) {
+	pbuf.NewBytes(16).V(func(p []byte) {
+		if _, err = io.ReadFull(rand.Reader, p); err != nil {
+			return
+		}
+		key = base64.StdEncoding.EncodeToString(p)
+	})
+	return
 }
 
 // Token octets per RFC 2616.

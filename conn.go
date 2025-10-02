@@ -6,6 +6,7 @@ package websocket
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
@@ -16,6 +17,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/fumiama/orbyte/pbuf"
 )
 
 const (
@@ -110,39 +113,40 @@ type CloseError struct {
 }
 
 func (e *CloseError) Error() string {
-	s := []byte("websocket: close ")
-	s = strconv.AppendInt(s, int64(e.Code), 10)
+	sb := strings.Builder{}
+	sb.WriteString("websocket: close ")
+	sb.WriteString(strconv.Itoa(e.Code))
 	switch e.Code {
 	case CloseNormalClosure:
-		s = append(s, " (normal)"...)
+		sb.WriteString(" (normal)")
 	case CloseGoingAway:
-		s = append(s, " (going away)"...)
+		sb.WriteString(" (going away)")
 	case CloseProtocolError:
-		s = append(s, " (protocol error)"...)
+		sb.WriteString(" (protocol error)")
 	case CloseUnsupportedData:
-		s = append(s, " (unsupported data)"...)
+		sb.WriteString(" (unsupported data)")
 	case CloseNoStatusReceived:
-		s = append(s, " (no status)"...)
+		sb.WriteString(" (no status)")
 	case CloseAbnormalClosure:
-		s = append(s, " (abnormal closure)"...)
+		sb.WriteString(" (abnormal closure)")
 	case CloseInvalidFramePayloadData:
-		s = append(s, " (invalid payload data)"...)
+		sb.WriteString(" (invalid payload data)")
 	case ClosePolicyViolation:
-		s = append(s, " (policy violation)"...)
+		sb.WriteString(" (policy violation)")
 	case CloseMessageTooBig:
-		s = append(s, " (message too big)"...)
+		sb.WriteString(" (message too big)")
 	case CloseMandatoryExtension:
-		s = append(s, " (mandatory extension missing)"...)
+		sb.WriteString(" (mandatory extension missing)")
 	case CloseInternalServerErr:
-		s = append(s, " (internal server error)"...)
+		sb.WriteString(" (internal server error)")
 	case CloseTLSHandshake:
-		s = append(s, " (TLS handshake error)"...)
+		sb.WriteString(" (TLS handshake error)")
 	}
 	if e.Text != "" {
-		s = append(s, ": "...)
-		s = append(s, e.Text...)
+		sb.WriteString(": ")
+		sb.WriteString(e.Text)
 	}
-	return string(s)
+	return sb.String()
 }
 
 // IsCloseError returns boolean indicating whether the error is a *CloseError
@@ -390,7 +394,7 @@ func (c *Conn) write(frameType int, deadline time.Time, buf0, buf1 []byte) error
 		return c.writeFatal(err)
 	}
 	if len(buf1) == 0 {
-		_, err = c.conn.Write(buf0)
+		_, err = io.Copy(c.conn, bytes.NewReader(buf0))
 	} else {
 		err = c.writeBufs(buf0, buf1)
 	}
@@ -405,7 +409,7 @@ func (c *Conn) write(frameType int, deadline time.Time, buf0, buf1 []byte) error
 
 func (c *Conn) writeBufs(bufs ...[]byte) error {
 	b := net.Buffers(bufs)
-	_, err := b.WriteTo(c.conn)
+	_, err := io.Copy(c.conn, &b)
 	return err
 }
 
@@ -425,18 +429,28 @@ func (c *Conn) WriteControl(messageType int, data []byte, deadline time.Time) er
 		b1 |= maskBit
 	}
 
-	buf := make([]byte, 0, maxFrameHeaderSize+maxControlFramePayloadSize)
-	buf = append(buf, b0, b1)
+	buf := pbuf.NewBytes(maxFrameHeaderSize + maxControlFramePayloadSize)
+	n := 0
+	buf.V(func(b []byte) {
+		b = b[:0]
 
-	if c.isServer {
-		buf = append(buf, data...)
-	} else {
-		key := newMaskKey()
-		keybuf := make([]byte, 4)
-		binary.LittleEndian.PutUint32(keybuf, key)
-		buf = append(buf, keybuf...)
-		buf = append(buf, data...)
-		maskBytes(key, buf[6:])
+		b = append(b, b0, b1)
+
+		if c.isServer {
+			b = append(b, data...)
+		} else {
+			key := newMaskKey()
+			var keybuf [4]byte
+			binary.LittleEndian.PutUint32(keybuf[:], key)
+			b = append(b, keybuf[:]...)
+			b = append(b, data...)
+			maskBytes(key, b[6:])
+		}
+
+		n = len(b)
+	})
+	if n > buf.Len() {
+		panic("unexpected oversized control frame")
 	}
 
 	if deadline.IsZero() {
@@ -472,9 +486,15 @@ func (c *Conn) WriteControl(messageType int, data []byte, deadline time.Time) er
 	if err := c.conn.SetWriteDeadline(deadline); err != nil {
 		return c.writeFatal(err)
 	}
-	if _, err = c.conn.Write(buf); err != nil {
-		return c.writeFatal(err)
+	buf.SliceTo(n).V(func(b []byte) {
+		if _, err = io.Copy(c.conn, bytes.NewReader(b)); err != nil {
+			err = c.writeFatal(err)
+		}
+	})
+	if err != nil {
+		return err
 	}
+
 	if messageType == CloseMessage {
 		_ = c.writeFatal(ErrCloseSent)
 	}
@@ -612,9 +632,9 @@ func (w *messageWriter) flushFrame(final bool, extra []byte) error {
 
 	if !c.isServer {
 		key := newMaskKey()
-		keybuf := make([]byte, 4)
-		binary.LittleEndian.PutUint32(keybuf, key)
-		copy(c.writeBuf[maxFrameHeaderSize-4:], keybuf)
+		var keybuf [4]byte
+		binary.LittleEndian.PutUint32(keybuf[:], key)
+		copy(c.writeBuf[maxFrameHeaderSize-4:], keybuf[:])
 		maskBytes(key, c.writeBuf[maxFrameHeaderSize:w.pos])
 		if len(extra) > 0 {
 			return w.endMessage(c.writeFatal(errors.New("websocket: internal error, extra used in client mode")))
@@ -1109,6 +1129,18 @@ func (c *Conn) ReadMessage() (messageType int, p []byte, err error) {
 	}
 	p, err = io.ReadAll(r)
 	return messageType, p, err
+}
+
+// ReadMessageTo is a helper method for getting a reader using NextReader and
+// coping from that reader to w.
+func (c *Conn) ReadMessageTo(w io.Writer) (messageType int, err error) {
+	var r io.Reader
+	messageType, r, err = c.NextReader()
+	if err != nil {
+		return messageType, err
+	}
+	_, err = io.Copy(w, r)
+	return messageType, err
 }
 
 // SetReadDeadline sets the read deadline on the underlying network connection.
